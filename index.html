@@ -67,7 +67,8 @@ textarea{min-height:64px;resize:vertical}
 .tag.s-leve{background:var(--amber-soft);color:var(--amber)}
 .tag.s-moderado,.tag.s-forte{background:var(--red-soft);color:var(--red)}
 .tag.rem{background:var(--blue-soft);color:var(--blue)}
-.del{background:none;border:0;color:var(--muted);font-size:.8rem;text-decoration:underline;cursor:pointer;padding:0;margin-top:2px}
+.del{background:none;border:0;color:var(--muted);font-size:.85rem;text-decoration:underline;cursor:pointer;padding:4px 0;margin:2px 14px 0 0}
+.ev.editing{outline:2px dashed var(--sage);outline-offset:4px;border-radius:6px}
 .empty{color:var(--muted);text-align:center;padding:18px 0}
 .hist{list-style:none;padding:0;margin:0}
 .hist li{border-bottom:1px solid var(--line);padding:10px 0;display:flex;justify-content:space-between;gap:10px;cursor:pointer}
@@ -132,6 +133,7 @@ ul.g{padding-left:20px;margin:6px 0}ul.g li{margin:4px 0}
     <label for="obs">Observação (opcional)</label>
     <input id="obs" placeholder="Ex.: comi rápido, estava com fome">
     <button class="primary" id="add">Salvar registro</button>
+    <button class="ghost hidden" id="cancel" style="width:100%;margin-top:8px">Cancelar edição</button>
     <div class="status" id="status" role="status"></div>
   </div>
 
@@ -214,7 +216,7 @@ ul.g{padding-left:20px;margin:6px 0}ul.g li{margin:4px 0}
 <script>
 const KEY='diario-alimentar:registros';
 let data={}; // { 'YYYY-MM-DD': [ {id,kind,time,ref,txt,sev,tipos,obs} ] }
-let cur=today(), kind='refeicao', sev='nenhum', tipos=new Set();
+let cur=today(), kind='refeicao', sev='nenhum', tipos=new Set(), editingId=null;
 
 function today(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function nowTime(){const d=new Date();return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
@@ -260,12 +262,15 @@ $('add').onclick=async()=>{
   const time=$('hora').value||nowTime();
   const txt=$('txt').value.trim();
   if(kind!=='dormir'&&!txt){$('status').textContent='Escreva o que comeu, sentiu ou tomou antes de salvar.';$('txt').focus();return}
-  const e={id:Date.now(),kind,time,txt,obs:$('obs').value.trim()};
+  const e={id:editingId||Date.now(),kind,time,txt,obs:$('obs').value.trim()};
   if(kind==='refeicao') e.ref=$('ref').value;
   if(kind==='refeicao'||kind==='sintoma'){e.sev=sev;e.tipos=[...tipos]}
-  (data[cur]=data[cur]||[]).push(e);
+  const wasEdit=!!editingId;
+  if(wasEdit){data[cur]=(data[cur]||[]).map(x=>x.id===editingId?e:x)}
+  else (data[cur]=data[cur]||[]).push(e);
   const ok=await save();
-  $('status').textContent=ok?'Registro salvo.':'Não foi possível salvar agora. Tente de novo em instantes.';
+  $('status').textContent=ok?(wasEdit?'Alteração salva.':'Registro salvo.'):'Não foi possível salvar. Verifique o espaço do celular e tente de novo.';
+  endEdit(false);
   $('txt').value='';$('obs').value='';tipos.clear();
   document.querySelectorAll('#tipos .chip').forEach(b=>b.setAttribute('aria-pressed','false'));
   setSev('nenhum'); if(kind==='sintoma') setSev('leve');
@@ -277,7 +282,28 @@ function sortDay(arr){
   // horários antes das 5h contam como madrugada do mesmo dia (depois da noite)
   return [...arr].sort((a,b)=>{const f=t=>{const m=mins(t);return m<300?m+1440:m};return f(a.time)-f(b.time)});
 }
+function startEdit(id){
+  const e=(data[cur]||[]).find(x=>x.id===id); if(!e) return;
+  editingId=id; setKind(e.kind);
+  $('hora').value=e.time; if(e.ref) $('ref').value=e.ref;
+  $('txt').value=e.txt||''; $('obs').value=e.obs||'';
+  setSev(e.sev||(e.kind==='sintoma'?'leve':'nenhum'));
+  tipos=new Set(e.tipos||[]);
+  document.querySelectorAll('#tipos .chip').forEach(b=>b.setAttribute('aria-pressed',tipos.has(b.dataset.t)));
+  $('add').textContent='Salvar alteração'; $('cancel').classList.remove('hidden');
+  $('status').textContent='Editando o registro das '+e.time+'.';
+  render(); window.scrollTo({top:0,behavior:'smooth'}); $('txt').focus({preventScroll:true});
+}
+function endEdit(clear){
+  editingId=null; $('add').textContent='Salvar registro'; $('cancel').classList.add('hidden');
+  if(clear){$('txt').value='';$('obs').value='';tipos.clear();
+    document.querySelectorAll('#tipos .chip').forEach(b=>b.setAttribute('aria-pressed','false'));
+    setSev(kind==='sintoma'?'leve':'nenhum');$('hora').value=nowTime();$('status').textContent='Edição cancelada.';render()}
+}
+$('cancel').onclick=()=>endEdit(true);
 async function del(id){
+  if(!confirm('Apagar este registro?')) return;
+  if(editingId===id) endEdit(true);
   data[cur]=(data[cur]||[]).filter(e=>e.id!==id);
   if(!data[cur].length) delete data[cur];
   await save(); render();
@@ -295,13 +321,13 @@ function render(){
   if(!arr.length){tl.innerHTML='<div class="empty">Nenhum registro neste dia. Comece pelo formulário acima.</div>'}
   else tl.innerHTML=arr.map(e=>{
     const title=e.kind==='refeicao'?esc(e.ref):e.kind==='sintoma'?'Sintoma':e.kind==='remedio'?'Remédio':'Fui deitar';
-    return `<div class="ev k-${e.kind} ${e.sev&&e.sev!=='nenhum'?'sym-'+e.sev:''}">
+    return `<div class="ev k-${e.kind} ${e.sev&&e.sev!=='nenhum'?'sym-'+e.sev:''} ${e.id===editingId?'editing':''}">
       <span class="t">${e.time}</span><span class="dot"></span>
       <div class="what">${title}</div>
       ${e.txt?`<div>${esc(e.txt)}</div>`:''}
       ${sevTag(e)}${e.kind==='remedio'?'<span class="tag rem">Remédio</span>':''}
       ${e.obs?`<div class="meta">${esc(e.obs)}</div>`:''}
-      <button class="del" onclick="del(${e.id})">Apagar</button>
+      <button class="del" onclick="startEdit(${e.id})">Editar</button><button class="del" onclick="del(${e.id})">Apagar</button>
     </div>`}).join('');
   // intervalo entre última refeição e deitar
   const g=$('gap'); g.innerHTML='';
@@ -386,8 +412,8 @@ $('rstfile').onchange=async ev=>{
   }catch(e){$('hstatus').textContent='Este arquivo não é um backup do diário. Escolha o arquivo .json salvo pelo botão Salvar backup.'}
   ev.target.value='';
 };
-$('prev').onclick=()=>{cur=shift(cur,-1);render()};
-$('next').onclick=()=>{if(cur<today()){cur=shift(cur,1);render()}};
+$('prev').onclick=()=>{if(editingId)endEdit(true);cur=shift(cur,-1);render()};
+$('next').onclick=()=>{if(cur<today()){if(editingId)endEdit(true);cur=shift(cur,1);render()}};
 
 function show(v){
   ['dia','hist','guia'].forEach(x=>$('v-'+x).classList.toggle('hidden',x!==v));
